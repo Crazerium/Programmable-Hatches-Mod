@@ -6,10 +6,12 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Random;
+import java.util.Set;
 import java.util.stream.Stream;
 
 import org.jetbrains.annotations.Nullable;
@@ -80,6 +82,7 @@ import gregtech.api.util.GTRecipe;
 import gregtech.common.blocks.ItemMachines;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.init.Items;
+import net.minecraft.item.Item;
 import net.minecraft.inventory.ICrafting;
 import net.minecraft.inventory.InventoryCrafting;
 import net.minecraft.item.ItemStack;
@@ -99,6 +102,7 @@ import reobf.proghatches.gt.metatileentity.PatternDualInputHatch.Inst;
 import reobf.proghatches.gt.metatileentity.util.IMultiplePatternPushable;
 import reobf.proghatches.gt.metatileentity.util.ISpecialOptimize;
 import reobf.proghatches.item.ItemProgrammingCircuit;
+import reobf.proghatches.util.SubItemDamages;
 
 @gregtech.api.interfaces.metatileentity.IMetaTileEntity.SkipGenerateDescription
 public class RecipeFilterCRIB extends PatternDualInputHatch  {
@@ -271,7 +275,7 @@ public boolean pasteCopiedData(EntityPlayer player, NBTTagCompound nbt) {
 				modeHintLangKey = get.get(recipeIndex)
 					.unlocalizedName;
 			}
-			regJob(get.get(recipeIndex));
+			regJob(get.get(recipeIndex),player);
 		}
 	}
 	return true;
@@ -368,25 +372,54 @@ private void postChangeInner(StorageChannel c,IAEItemStack is){
         return Collections.emptyList();
     }
     
+    /** at most this many patterns come out of one recipe, however many wildcard inputs it has */
+    private static final int MAX_PATTERNS_PER_RECIPE = 32;
+
     /**
-     * Issue #335: turns a recipe-side stack into something that can exist as an item.
+     * Issue #335 and what followed from it: what to do with a recipe input that carries
+     * OreDictionary.WILDCARD_VALUE (32767, "any damage").
      * <p>
-     * A GT recipe input may carry OreDictionary.WILDCARD_VALUE (32767, "any damage"); machine recipes
-     * really support that - the lookup probes (item, 32767) for every concrete stack offered, and GT
-     * itself uses it (any-charge lapotron crystals, any-heat coolant cells), as do PH's
+     * Machine recipes really support that - the lookup probes (item, 32767) for every concrete stack
+     * offered, and GT itself uses it (any-charge lapotron crystals, any-heat coolant cells), as do PH's
      * toolkit-as-catalyst recipes. But a wildcard is a matching pattern, not an item. Written verbatim
-     * into a generated pattern it asks AE for an item no network can hold, and rendering it indexes
-     * the item's icon table with 32767 - that was the crash: a programming circuit wrapping
-     * toolkit@32767 drawn by GuiCraftConfirm. Pin it to damage 0, the fallback NEI uses when it expands
-     * a wildcard; getSubItems() would give a nicer pick but is client-only and this runs on the server.
-     * Applies to consumed AND non-consumed inputs. Returns a copy when it changes anything: the
-     * argument is the recipe's own stack and must never be mutated.
+     * into a generated pattern it asks AE for an item no network can hold, and rendering it indexes the
+     * item's icon table with 32767 - that was the crash: a programming circuit wrapping toolkit@32767
+     * drawn by GuiCraftConfirm.
+     * <p>
+     * So a wildcard input is replaced by the damage values the item really comes in, one pattern per
+     * value. Those values come from Item.getSubItems, which only a client has; SubItemDamages asks the
+     * client of the player who started the generation and step() waits for the answer. Whatever is not
+     * known by then is pinned to damage 0, which is all this did before and what NEI falls back to.
+     * <p>
+     * Several wildcard inputs multiply: every combination is a valid recipe. They are enumerated like an
+     * odometer, first wildcard input fastest, and the enumeration stops at
+     * {@link #MAX_PATTERNS_PER_RECIPE} patterns for the recipe as a whole. Applies to consumed AND
+     * non-consumed inputs. The recipe's own stacks are never mutated.
      */
-    private static ItemStack concrete(ItemStack recipeSide){
-    	if(recipeSide.getItemDamage()!=OreDictionary.WILDCARD_VALUE)return recipeSide;
-    	ItemStack copy=recipeSide.copy();
-    	copy.setItemDamage(0);
-    	return copy;
+    private static boolean isWildcard(ItemStack recipeSide){
+    	return recipeSide!=null&&recipeSide.getItem()!=null
+    			&&recipeSide.getItemDamage()==OreDictionary.WILDCARD_VALUE;
+    }
+
+    /** what each wildcard input of the recipe stands for, in input order */
+    private static List<short[]> wildcardChoices(GTRecipe xx){
+    	List<short[]> choices=new ArrayList<>();
+    	for(ItemStack input:xx.mInputs){
+    		if(isWildcard(input))choices.add(SubItemDamages.candidates(input.getItem()));
+    	}
+    	return choices;
+    }
+
+    /** the items this recipe map uses with a wildcard damage and that have subtypes, i.e. what a client can tell us about */
+    private static Set<Item> wildcardItems(RecipeMap<?> map){
+    	Set<Item> items=Collections.newSetFromMap(new IdentityHashMap<>());
+    	for(GTRecipe xx:map.getAllRecipes()){
+    		if(xx.mInputs==null)continue;
+    		for(ItemStack input:xx.mInputs){
+    			if(isWildcard(input)&&input.getItem().getHasSubtypes())items.add(input.getItem());
+    		}
+    	}
+    	return items;
     }
 
     private static AEItemStack zeroToCircuit(AEItemStack in){
@@ -415,13 +448,22 @@ private void postChangeInner(StorageChannel c,IAEItemStack is){
      * <p>
      * ItemFluidDrop is legacy since AE2 gained native fluid crafting.
      */
-    private static ItemStack buildPatternStack(GTRecipe xx) {
+    private static ItemStack buildPatternStack(GTRecipe xx, List<short[]> choices, int combination) {
         ItemStack patternStack = new ItemStack(ItemAndBlockHolder.PATTERN);
 
         List<IAEStack<?>> inputsList = new ArrayList<>();
+        int wildcard = 0;
+        int rest = combination;
         for (ItemStack input : xx.mInputs) {
             if (input != null) {
-                inputsList.add(RecipeFilterCRIB.zeroToCircuit(AEItemStack.create(concrete(input))));
+                ItemStack concrete = input;
+                if (isWildcard(input)) {
+                    short[] damages = choices.get(wildcard++);
+                    concrete = input.copy();
+                    concrete.setItemDamage(damages[rest % damages.length]);
+                    rest /= damages.length;
+                }
+                inputsList.add(RecipeFilterCRIB.zeroToCircuit(AEItemStack.create(concrete)));
             }
         }
         for (FluidStack fluidInput : xx.mFluidInputs) {
@@ -462,16 +504,27 @@ private void postChangeInner(StorageChannel c,IAEItemStack is){
         patternStack.setTagCompound(tag);
         return patternStack;
     }
+    /**
+     * All patterns of one recipe: a single one, unless it has wildcard inputs, see
+     * {@link #isWildcard(ItemStack)}.
+     */
+    private static List<ItemStack> buildPatternStacks(GTRecipe xx) {
+        List<short[]> choices = wildcardChoices(xx);
+        int combinations = 1;
+        for (short[] damages : choices) {
+            // capped at every step, so this cannot overflow
+            combinations = Math.min(MAX_PATTERNS_PER_RECIPE, combinations * damages.length);
+        }
+        List<ItemStack> patterns = new ArrayList<>(combinations);
+        for (int k = 0; k < combinations; k++) patterns.add(buildPatternStack(xx, choices, k));
+        return patterns;
+    }
     private ItemList assemble(RecipeMap<?> map){
 		ItemList all=new ItemList();
 		if(Platform.isClient())return all;
     	for(GTRecipe xx:map.getAllRecipes()){
     		if(xx.mEUt>eutFilter){continue;}
-		 ItemStack patternStack = buildPatternStack(xx);
-   
-         
-         
-         all.add(AEItemStack.create(patternStack));
+		 for(ItemStack patternStack:buildPatternStacks(xx))all.add(AEItemStack.create(patternStack));
          
 		}
     	return all;
@@ -530,7 +583,7 @@ private void postChangeInner(StorageChannel c,IAEItemStack is){
     			modeHintLangKey=get.get(recipeIndex).unlocalizedName;
     		}
     		if(getBaseMetaTileEntity().getWorld().isRemote==false)
-    	regJob(get.get(recipeIndex));
+    	regJob(get.get(recipeIndex),aPlayer);
     	return ;
     	}
     	
@@ -625,7 +678,7 @@ private void postChangeInner(StorageChannel c,IAEItemStack is){
     			modeHintLangKey=get.get(recipeIndex).unlocalizedName;
     		}
     		if(getBaseMetaTileEntity().getWorld().isRemote==false)
-    	regJob(get.get(recipeIndex));
+    	regJob(get.get(recipeIndex),aPlayer);
     	return true;
     	}
     	filter=old;
@@ -658,6 +711,7 @@ private void postChangeInner(StorageChannel c,IAEItemStack is){
     //1 genitem
     //2 genpat
     //3 finish
+    //4 waiting for the client to report sub items, then 1
     int stage=0; 
     int progress;
     Iterator<GTRecipe> todo;
@@ -665,6 +719,18 @@ private void postChangeInner(StorageChannel c,IAEItemStack is){
     ArrayList<ICraftingPatternDetails> pd;
     public void step(){
     	if(stage==0)return;
+    	if(stage==4){
+    		awaited.removeIf(SubItemDamages::isKnown);
+    		if(awaited.isEmpty()){
+    			stage=1;
+    		}else if(--waitTicks<=0){
+    			subItemsTimedOut=true;
+    			awaited.clear();
+    			stage=1;
+    		}else{
+    			return;
+    		}
+    	}
     	if(stage==3){
     		 EntityPlayer aPlayer = getBaseMetaTileEntity().getWorld().getClosestPlayer(
     				getBaseMetaTileEntity().getXCoord(), getBaseMetaTileEntity().getYCoord(), getBaseMetaTileEntity().getZCoord(), 100);
@@ -688,6 +754,7 @@ private void postChangeInner(StorageChannel c,IAEItemStack is){
     		 if(aPlayer!=null && aPlayer.getEntityWorld().isRemote==false){
          		aPlayer.addChatMessage(new ChatComponentText("Recipe updated."));
          		aPlayer.addChatMessage(new ChatComponentText("Generated recipes: "+this.genPatternsDetails.length));
+         		if(subItemsTimedOut)aPlayer.addChatMessage(new ChatComponentText("Your client did not report sub items in time, wildcard inputs were pinned to damage 0."));
          		if(modeHint!=null){
          			aPlayer.addChatMessage(new ChatComponentTranslation(modeHint,new ChatComponentTranslation(modeHintLangKey)));
          			aPlayer.addChatMessage(new ChatComponentText("Use a screw driver to switch modes."));
@@ -729,13 +796,10 @@ private void postChangeInner(StorageChannel c,IAEItemStack is){
     			if(todo.hasNext()==false){stage=2;todo=null;return;}
     		GTRecipe xx = todo.next();
     		if(xx.mEUt>eutFilter){continue;}
-    		to--;
-    		
-   		 ItemStack patternStack = buildPatternStack(xx);
-      
-            
-            
-            pitem.add(AEItemStack.create(patternStack));
+    		List<ItemStack> patternStacks = buildPatternStacks(xx);
+    		// a recipe that fans out into many patterns uses up that much of this tick's budget
+    		to-=Math.max(1,patternStacks.size());
+    		for(ItemStack patternStack:patternStacks)pitem.add(AEItemStack.create(patternStack));
     		
     	}
     	}
@@ -750,12 +814,30 @@ private void postChangeInner(StorageChannel c,IAEItemStack is){
     	    if (get < 0.100) return (int) (maxUpdates - (get - 0.050) / 0.050 * (maxUpdates - 10));
     	    return 10;
 	}
-	public void regJob(RecipeMap re){
+	/** how long step() waits for the client's answer about sub items before it goes on without it */
+	private static final int SUB_ITEM_WAIT_TICKS=200;
+	/** wildcard items the client has been asked about and has not answered yet, see stage 4 */
+	Set<Item> awaited;
+	int waitTicks;
+	boolean subItemsTimedOut;
+
+	/**
+	 * @param player who started this; their client is asked what the wildcard inputs of the recipe
+	 *               map stand for. May be null, then nobody is asked.
+	 */
+	public void regJob(RecipeMap re,EntityPlayer player){
     	progress=0;
-    	stage=1;
     	todo=re.getAllRecipes().iterator();
     	pitem=new ArrayList<>();
     	pd=new ArrayList<>();
+    	subItemsTimedOut=false;
+    	awaited=SubItemDamages.request(player,wildcardItems(re));
+    	if(awaited.isEmpty()){
+    		stage=1;
+    	}else{
+    		waitTicks=SUB_ITEM_WAIT_TICKS;
+    		stage=4;
+    	}
     }
     @Override
     public AENetworkProxy getProxy() {

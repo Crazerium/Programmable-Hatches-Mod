@@ -330,6 +330,8 @@ public class MyMod {
         net.registerMessage(new ModeSwitchedMessage.Handler(), ModeSwitchedMessage.class, 10, Side.CLIENT);
         net.registerMessage(new JoinMessage.Handler(), JoinMessage.class, 11, Side.CLIENT);
         net.registerMessage(new TryOpenPatternCIRBMessage.Handler(), TryOpenPatternCIRBMessage.class, 12, Side.SERVER);
+        net.registerMessage(new reobf.proghatches.net.SubItemRequestMessage.Handler(), reobf.proghatches.net.SubItemRequestMessage.class, 13, Side.CLIENT);
+        net.registerMessage(new reobf.proghatches.net.SubItemReplyMessage.Handler(), reobf.proghatches.net.SubItemReplyMessage.class, 14, Side.SERVER);
         proxy.preInit(event);
     }
 

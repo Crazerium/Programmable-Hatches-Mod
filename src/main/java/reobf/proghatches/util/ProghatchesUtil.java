@@ -196,6 +196,44 @@ public class ProghatchesUtil {
      * }});
      * }
      */
+    /**
+     * Shift-click priority for slots of a popup panel that should be preferred over the machine's
+     * ordinary slots for whatever they accept. ModularUI2 fills the lowest number first: the player
+     * inventory is 0 and ordinary slots are 100, so a value in between is tried before the ordinary
+     * slots for something coming out of the backpack, and after the backpack for something coming out
+     * of the machine.
+     */
+    public static final int POPUP_SLOT_SHIFT_PRIORITY = 50;
+
+    /**
+     * Call this while building a popup panel that has shift-click targets with a priority of their own,
+     * before its slots are created.
+     * <p>
+     * Works around an ordering bug in ModularUI2 (seen in 2.3.88 to 2.3.91). ModularContainer keeps
+     * its shift-click targets sorted by priority, but a slot that registers after the container was
+     * built is only sorted in once the container has run detectAndSendChanges() for the first time.
+     * A server does that on its first tick. A client only does it when the player first clicks a
+     * slot, and it never re-sorts afterwards. So for a popup opened before any slot was clicked, the
+     * client appends the popup's slots at the END of its list while the server sorts them in by
+     * priority. The two sides then pick different targets for the same shift-click: the server moves
+     * the stack to the right slot and the client, predicting on its own, shows a copy of it in the
+     * wrong one, a ghost that exists on the client only.
+     * <p>
+     * Running the container's own detectAndSendChanges() here puts the client in the same state as
+     * the server before the popup's slots register. It is the call ModularUI2 itself makes on the
+     * client after every slot click, and on a client it sends nothing.
+     */
+    public static void sortShiftTargetsOfPopup(PanelSyncManager syncManager) {
+        if (!syncManager.isClient()) return;
+        try {
+            syncManager.getContainer()
+                .detectAndSendChanges();
+        } catch (RuntimeException e) {
+            // cosmetic only: without it the client may show a ghost stack until the slot resyncs
+            MyMod.LOG.warn("could not prepare shift-click ordering for a popup panel", e);
+        }
+    }
+
     /*
      * prevent negative stacksize dupe bug
      */

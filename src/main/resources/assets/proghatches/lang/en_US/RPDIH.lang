@@ -6,6 +6,7 @@ If all pattern inputs cannot be push in one single try, it won't be pushed at al
 Right click with a Multiblock Controller/Singleblock Machine to auto-generate patterns.
 Screwdriver click to switch modes, if the Multiblock Controller supports multiple recipes.
 Link a Wireless Terminal to remove unwanted patterns.
+An input that accepts any damage value is expanded into the item's real sub items, at most 32 patterns per recipe.
 Buffer: {bufferNum}
 For each buffer:
 {slots} Slots

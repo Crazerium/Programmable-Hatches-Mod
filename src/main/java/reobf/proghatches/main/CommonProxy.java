@@ -137,7 +137,7 @@ public class CommonProxy {
             "proghatch_circuit_fixer");
         GameRegistry.registerItem(
             MyMod.fixer2 = new ItemFixer2().setUnlocalizedName("proghatch_circuit_fixer2")
-                .setTextureName("ic2:itemToolWrench"),
+                .setTextureName("NOTSET"),
             "proghatch_circuit_fixer2");
         GameRegistry.registerItem(
             MyMod.toolkit = new ItemProgrammingToolkit().setUnlocalizedName("prog_toolkit")
@@ -407,4 +407,9 @@ public class CommonProxy {
 
     // register server commands in this event handler (Remove if not needed)
     public void serverStarting(FMLServerStartingEvent event) {}
+
+    /**
+     * Client only, see ClientProxy: answers a SubItemRequestMessage. A dedicated server never receives one.
+     */
+    public void answerSubItemRequest(int[] ids) {}
 }

@@ -1591,7 +1591,7 @@ public boolean playerConfigClient;
 		builder.child(createPowerSwitchButton2(syncManager));
 
 		IPanelHandler patternPanel = syncManager
-			.syncedPanel("pattern_panel", true, (manager, handler) -> createPatternWindow2(manager));
+			.syncedPanel("pattern_panel", true, (manager, handler) -> createPatternWindow2(manager, handler));
 
 		builder.child(new com.cleanroommc.modularui.widgets.ButtonWidget<>().onMousePressed(mouseButton -> {
 			patternPanel.openPanel();
@@ -1699,7 +1699,7 @@ public boolean playerConfigClient;
 			.background(GTGuiTextures.BUTTON_STANDARD);
 	}
 
-	protected ModularPanel createPatternWindow2(PanelSyncManager syncManager) {
+	protected ModularPanel createPatternWindow2(PanelSyncManager syncManager, IPanelHandler panelHandler) {
 		final int WIDTH = 18 * 4 + 6;     // page content width (4 slots wide)
 		final int HEIGHT = 18 * 9 + 6;
 		// Panel is content-width only; the right-side tabs protrude past its right edge.
@@ -1820,11 +1820,16 @@ public boolean playerConfigClient;
 		// writes propagate directly to the pattern[] array (same as the legacy handler).
 		ItemStackHandler shared_handler = new ItemStackHandler(pattern);
 
+		// Shift-click routing, same as in PatternDualInputHatch.createPatternWindow2: sort the
+		// client's late-registered slots (ModularUI2 bug, see the helper), a priority between the
+		// backpack and the ordinary slots, and slots that only count while this panel is open.
+		// The old value here was -1, which sorted these slots even before the backpack.
+		reobf.proghatches.util.ProghatchesUtil.sortShiftTargetsOfPopup(syncManager);
 		// register the slot group before the slots reference it (rowSize 4 == grid width)
-		// rowSize 4 (grid width); shift-click priority -1 so shift-clicking from the player
-		// inventory targets other slot groups before these pattern slots (matches the legacy
-		// MUI1 setShiftClickPriority(-1) behaviour).
-		syncManager.registerSlotGroup("pattern_inv", 4, -1);
+		syncManager.registerSlotGroup(
+			"pattern_inv",
+			4,
+			reobf.proghatches.util.ProghatchesUtil.POPUP_SLOT_SHIFT_PRIORITY);
 
 		for (int i = 0; i < 36; i++) {
 			final int ii = i;
@@ -1858,7 +1863,10 @@ public boolean playerConfigClient;
 			// ---- page 1: interactive pattern slot + multiplier text overlay ----
 			// Same output-rendering fix as page 2, see the comment there (issue #329).
 			page1.child(new PatternSlot().slot(new ModularSlot(shared_handler, i).slotGroup("pattern_inv")
-				.filter(itemStack -> itemStack.getItem() instanceof ICraftingPatternItem)
+				// Closing the panel does not unregister its slots from the container, they
+				// stay shift-click targets. Without the isPanelOpen() test a pattern
+				// shift-clicked after the panel was closed vanished into a slot nobody can see.
+				.filter(itemStack -> panelHandler.isPanelOpen() && itemStack.getItem() instanceof ICraftingPatternItem)
 				.changeListener((newItem, onlyAmountChanged, client, init) -> onPatternChange()))
 				.pos((i % 4) * 18 + 3, (i / 4) * 18 + 3)
 				.background(GTGuiTextures.SLOT_ITEM_STANDARD));

@@ -1432,6 +1432,17 @@ public class PHRecipes implements Runnable {
             .eut(480)
             .addTo(RecipeMaps.assemblerRecipes);
 
+        // same ingredients as the fixer above, told apart by the circuit
+        GTValues.RA.stdBuilder()
+            .itemInputs(
+                new ItemStack(MyMod.toolkit, 0, OreDictionary.WILDCARD_VALUE),
+                new ItemStack(Items.diamond),
+                GTUtility.getIntegratedCircuit(8))
+            .itemOutputs(new ItemStack(MyMod.fixer2))
+            .duration(10 * SECONDS)
+            .eut(480)
+            .addTo(RecipeMaps.assemblerRecipes);
+
         if (flag) {
             /*
              * GTValues.RA.stdBuilder()
